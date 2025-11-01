@@ -142,6 +142,11 @@ class Interpreter(InterpreterBase):
             for funcs in self.functions[func_name]:
                 if funcs['num_args'] == len(args):
                     function = funcs['function']
+            if function is None:
+                super().error(
+                    ErrorType.NAME_ERROR,
+                    f'Function {func_name} not found with {len(args)} arguments'
+                )
             # function is now of type Element, elem_type = "func"
             
             # load args into LOCAL_VARIABLES
@@ -228,7 +233,7 @@ class Interpreter(InterpreterBase):
                 val = self.run_expression(statement.dict['expression'], LOCAL_VARIABLES)
                 raise ReturnSignal(val=val)
             
-            return ReturnSignal(val=Value(None, None))
+            raise ReturnSignal(val=Value(None, None))
             
         else:
             raise Exception('Invalid statement passed: ' + str(statement))
@@ -447,7 +452,9 @@ def foo(c) {
 }
 
 def main() {
-  foo(10);
+  print(1);
+  return;
+  print(2);
 }
 """
         

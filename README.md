@@ -1,3 +1,3 @@
-Solution for CS 131 F25 Project 1
+Solution for CS 131 F25 Project 2
 
 Status: all good!
