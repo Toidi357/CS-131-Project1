@@ -116,6 +116,9 @@ class Interpreter(InterpreterBase):
                 
             return Value(str, str(super().get_input()))
     
+        elif func_name == 'repr':
+            return Value(str, repr(args[0]))
+    
         # actual function
         else:
             # check function name
@@ -183,7 +186,7 @@ class Interpreter(InterpreterBase):
                 return_value = r.val
                 
                 # this is to handle empty returns
-                if not return_value:
+                if return_value == None:
                     return_value = get_default_value(function.return_type)
             else:
                 # if no explicit return, return default value for function's declared return type
@@ -273,30 +276,35 @@ class Interpreter(InterpreterBase):
             Object stuff
             '''
             if len(fields) > 1:
-                # check all values in the dotted string to make sure they're valid
                 base_val = LOCAL_VARIABLES[var_base_name] if var_base_name in LOCAL_VARIABLES else BLOCK_VARIABLES[var_base_name]
-                if base_val.kind == None:
+                if base_val.value == None:
                     super().error(
                         ErrorType.FAULT_ERROR,
                         f'Base variable {var_base_name} not defined yet'
                     )
                 iterr = base_val.value
-                for i in range(1, len(fields) - 1): # we check fields starting from the 2nd (cuz we know 1st exists) till the 2nd last (cuz we don't know whether the last field is new or not)
-                    if fields[i] in iterr.value:
-                        if fields[i][-1] != 'o':
-                            super().error(
-                                ErrorType.TYPE_ERROR,
-                                f'Intermediate segment {fields[i]} for variable {var_base_name} is not object'
-                            )
-                        iterr = iterr.value[fields[i]].value
-                    else:
+                
+                for seg in fields[1:-1]:
+                    if seg not in iterr.value:
                         super().error(
                             ErrorType.NAME_ERROR,
-                            f'Requested field {fields[i]} does not exist in object {statement.dict["var"]}'
+                            f'Requested field {seg} does not exist in object {statement.dict["var"]}'
                         )
-                # update/create value; types are already checked beforehand
-                iterr.value[fields[-1]] = new_value
+                    next_val = iterr.value[seg]
+                    if next_val.kind == Object and next_val.value == None:
+                        super().error(
+                            ErrorType.FAULT_ERROR,
+                            f'Dereferencing nil of {seg} for {var_base_name}'
+                        )
+                    if next_val.kind != Object:
+                        super().error(
+                            ErrorType.TYPE_ERROR,
+                            f'Intermediate dotted segment not ending with o: {seg} for {var_base_name}'
+                        )
+                    iterr = next_val.value
                 
+                # the last field gets assigned
+                iterr.value[fields[-1]] = new_value
             else:
                 # if this variable is a Reference to a callee's variable, update it as such
                 if var_base_name in LOCAL_VARIABLES:
@@ -424,19 +432,27 @@ class Interpreter(InterpreterBase):
                             f'Base variable {var_base_name} not defined yet'
                         )
                     iterr = base_val.value
-                    for i in range(1, len(fields) - 1): # we check fields starting from the 2nd (cuz we know 1st exists) till the 2nd last (cuz we don't know whether the last field is new or not)
-                        if fields[i] in iterr.value:
-                            if fields[i][-1] != 'o':
-                                super().error(
-                                    ErrorType.TYPE_ERROR,
-                                    f'Intermediate segment {fields[i]} for variable {var_base_name} is not object'
-                                )
-                            iterr = iterr.value[fields[i]].value
-                        else:
+                    
+                    for seg in fields[1:-1]:
+                        if seg not in iterr.value:
                             super().error(
                                 ErrorType.NAME_ERROR,
-                                f'Requested field {fields[i]} does not exist in object {expression.dict["name"]}'
+                                f'Requested field {seg} does not exist in object {expression.dict["name"]}'
                             )
+                        next_val = iterr.value[seg]
+                        if next_val.kind == Object and next_val.value == None:
+                            super().error(
+                                ErrorType.FAULT_ERROR,
+                                f'Dereferencing nil of {seg} for {var_base_name}'
+                            )
+                        if next_val.kind != Object:
+                            super().error(
+                                ErrorType.TYPE_ERROR,
+                                f'Intermediate dotted segment not ending with o: {seg} for {var_base_name}'
+                            )
+                        
+                        iterr = next_val.value
+                        
                     # now we're on the last field
                     if fields[-1] not in iterr.value:
                         super().error(
@@ -690,12 +706,11 @@ class Interpreter(InterpreterBase):
         
 
 PROG = """
+def foov() {
+    return;
+}
 def main() {
-    var o;
-    o = @;
-    o.childo = nil;
-
-    print(o.childo.xi);
+    print(repr(foov()));
 }
 """
 
