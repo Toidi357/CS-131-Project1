@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List, Optional, Union
 from intbase import InterpreterBase, ErrorType
 from brewparse import parse_program
 from element import Element
@@ -127,17 +127,16 @@ class Interpreter(InterpreterBase):
                 
             # find the correct function with num args
             function = None
-            for func in self.FUNCTIONS[func_name]:
-                try:
-                    sign = generate_function_signature(args)
-                except Exception as e:
-                    if str(e) == 'NVART':
-                        super().error(
-                            ErrorType.TYPE_ERROR,
-                            f'Function {func_name} does not have valid parameter names'
-                        )
-                    raise
-                        
+            try:
+                sign = generate_function_signature(args)
+            except Exception as e:
+                if str(e) == 'NVART':
+                    super().error(
+                        ErrorType.TYPE_ERROR,
+                        f'Function {func_name} does not have valid parameter names'
+                    )
+                raise
+            for func in self.FUNCTIONS[func_name]:  
                 if func.signature == sign:
                     function = func
             if function is None:
@@ -149,24 +148,46 @@ class Interpreter(InterpreterBase):
             
             # load args into LOCAL_VARIABLES
             for i, argNode in enumerate(function.function.dict['args']):
-                LOCAL_VARIABLES[argNode.dict['name']] = args[i]
+                arg_name = argNode.dict['name']
+                arg_val = args[i]
+                arg_type = get_variable_type(arg_name)
+                
+                # check arg type errors
+                if arg_type != arg_val.kind:
+                    super().error(
+                        ErrorType.TYPE_ERROR,
+                        f'Argument assignment of {arg_name}: Attempted assign type {arg_val.kind} to variable type {arg_type}'
+                    )
+                
+                if argNode.dict['ref']: # pass by reference variable
+                    if not isinstance(arg_val, Reference):
+                        super().error(
+                            ErrorType.TYPE_ERROR,
+                            f'Argument {i + 1} to {func_name} must be a Reference, not Value'
+                        )
+                    
+                    LOCAL_VARIABLES[arg_name] = arg_val # arg_val is type Reference in this case
+                else:
+                    if isinstance(arg_val, Reference):
+                        val = arg_val.get()
+                        # if parameter not supposed to be a Reference but was passed a Reference, create a deep copy
+                        LOCAL_VARIABLES[arg_name] = Value(val.kind, val.value)
+                    else:    
+                        LOCAL_VARIABLES[arg_name] = args[i]
                 
             # run each statement
             try:
                 for statement in function.function.dict['statements']:
                     self.run_statement(statement, LOCAL_VARIABLES)
             except ReturnSignal as r:
-                return_value =  r.val
+                return_value = r.val
+                
+                # this is to handle empty returns
+                if not return_value:
+                    return_value = get_default_value(function.return_type)
             else:
                 # if no explicit return, return default value for function's declared return type
-                if function.return_type == int:
-                    return_value = Value(int, 0)
-                elif function.return_type == str:
-                    return_value = Value(str, "")
-                elif function.return_type == bool:
-                    return_value = Value(bool, False)
-                else: # both object and void return types default to None
-                    return Value(None, None)
+                return_value = get_default_value(function.return_type)
                 
             if function.return_type != return_value.kind:
                 super().error(
@@ -179,54 +200,151 @@ class Interpreter(InterpreterBase):
     '''
     This function runs a statement.
     '''
-    def run_statement(self, statement: Element, LOCAL_VARIABLES: dict) -> Union[None, Value]:
+    def run_statement(self, statement: Element, LOCAL_VARIABLES: dict[str, Value], BLOCK_VARIABLES: dict[str, Value] = {}) -> Union[None, Value]:
         if statement.elem_type == InterpreterBase.VAR_DEF_NODE:
-            var_name = statement.dict['name']
+            var_base_name = statement.dict['name']
+            try:
+                var_type = get_variable_type(statement.dict['name'])
+            except Exception as e:
+                if str(e) == 'NVRT':
+                    super().error(
+                        ErrorType.TYPE_ERROR,
+                        f'Variable {var_base_name} does not have associated type with it'
+                    )
+                raise
             
-            if var_name in LOCAL_VARIABLES:
+            if var_base_name in LOCAL_VARIABLES:
                 super().error(
                     ErrorType.NAME_ERROR,
-                    f"Variable {var_name} defined more than once"
+                    f"Variable {var_base_name} defined more than once"
+                )
+            LOCAL_VARIABLES[var_base_name] = get_default_value(var_type)
+            
+        elif statement.elem_type == InterpreterBase.BVAR_DEF_NODE:
+            var_base_name = statement.dict['name']
+            try:
+                var_type = get_variable_type(statement.dict['name'])
+            except Exception as e:
+                if str(e) == 'NVRT':
+                    super().error(
+                        ErrorType.TYPE_ERROR,
+                        f'Variable {var_base_name} does not have associated type with it'
+                    )
+                raise
+            
+            if var_base_name in LOCAL_VARIABLES or var_base_name in BLOCK_VARIABLES:
+                super().error(
+                    ErrorType.NAME_ERROR,
+                    f"Variable {var_base_name} defined more than once"
                 )
                 
-            LOCAL_VARIABLES[var_name] = None
+            BLOCK_VARIABLES[var_base_name] = get_default_value(var_type)
             
         elif statement.elem_type == InterpreterBase.ASSIGNMENT_NODE:
-            var_name = statement.dict['var']
+            fields = statement.dict['var'].split('.')
             
-            if var_name not in LOCAL_VARIABLES:
+            if len(fields) == 1: # not an object
+                var_base_name = statement.dict['var']
+            else:
+                var_base_name = fields[0]
+            var_type = get_variable_type(fields[-1]) # type we care about is the last one in the dotted string
+            
+            if var_base_name not in LOCAL_VARIABLES and var_base_name not in BLOCK_VARIABLES:
                 super().error(
                     ErrorType.NAME_ERROR,
-                    "Variable " + str(var_name) + " undefined"
+                    "Variable " + str(var_base_name) + " undefined"
+                )
+                
+            new_value = self.run_expression(statement.dict['expression'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            
+            
+            # if new_value is a Reference, dereference one layer to prevent max recursion depth
+            if isinstance(new_value, Reference):
+                new_value = new_value.get()
+                
+            # check type errors
+            if var_type != new_value.kind:
+                super().error(
+                    ErrorType.TYPE_ERROR,
+                    f'Variable assignment of {statement.dict["var"]}: Attempted assign type {new_value.kind} to variable type {var_type}'
                 )
             
-            LOCAL_VARIABLES[statement.dict['var']] = self.run_expression(statement.dict['expression'], LOCAL_VARIABLES)
+            '''
+            Object stuff
+            '''
+            if len(fields) > 1:
+                # check all values in the dotted string to make sure they're valid
+                base_val = LOCAL_VARIABLES[var_base_name] if var_base_name in LOCAL_VARIABLES else BLOCK_VARIABLES[var_base_name]
+                if base_val.kind == None:
+                    super().error(
+                        ErrorType.FAULT_ERROR,
+                        f'Base variable {var_base_name} not defined yet'
+                    )
+                iterr = base_val.value
+                for i in range(1, len(fields) - 1): # we check fields starting from the 2nd (cuz we know 1st exists) till the 2nd last (cuz we don't know whether the last field is new or not)
+                    if fields[i] in iterr.value:
+                        if fields[i][-1] != 'o':
+                            super().error(
+                                ErrorType.TYPE_ERROR,
+                                f'Intermediate segment {fields[i]} for variable {var_base_name} is not object'
+                            )
+                        iterr = iterr.value[fields[i]].value
+                    else:
+                        super().error(
+                            ErrorType.NAME_ERROR,
+                            f'Requested field {fields[i]} does not exist in object {statement.dict["var"]}'
+                        )
+                # update/create value; types are already checked beforehand
+                iterr.value[fields[-1]] = new_value
+                
+            else:
+                # if this variable is a Reference to a callee's variable, update it as such
+                if var_base_name in LOCAL_VARIABLES:
+                    if isinstance(LOCAL_VARIABLES[var_base_name], Reference):
+                        LOCAL_VARIABLES[var_base_name].set(new_value)
+                    else:
+                        LOCAL_VARIABLES[var_base_name] = new_value
+                else:
+                    if isinstance(BLOCK_VARIABLES[var_base_name], Reference):
+                        BLOCK_VARIABLES[var_base_name].set(new_value)
+                    else:
+                        BLOCK_VARIABLES[var_base_name] = new_value
         
         elif statement.elem_type == InterpreterBase.FCALL_NODE:
             func_name = statement.dict['name']
             args = statement.dict['args']
             
-            args = [self.run_expression(e, LOCAL_VARIABLES) for e in args] # evaluate all arguments first
+            args = [self.run_expression(e, LOCAL_VARIABLES, BLOCK_VARIABLES) for e in args] # evaluate all arguments first
             
-            val = self.call_function(func_name, args)
-            return val
+            return self.call_function(func_name, args)
             
         elif statement.elem_type == InterpreterBase.IF_NODE:
-            condition = self.run_expression(statement.dict['condition'], LOCAL_VARIABLES)
+            condition = self.run_expression(statement.dict['condition'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             if condition.kind != bool:
                 super().error(
                     ErrorType.TYPE_ERROR,
                     f'If statement did not return a boolean, returned: {condition.kind}, Value: {condition.value}'
                 )
+                
+            NEW_BLOCK_VARIABLES = {}
+            NEW_LOCAL_VARIABLES = {**LOCAL_VARIABLES, **BLOCK_VARIABLES}
 
             if condition.value: 
                 for s in statement.dict['statements']:
-                    self.run_statement(s, LOCAL_VARIABLES)
+                    self.run_statement(s, NEW_LOCAL_VARIABLES, NEW_BLOCK_VARIABLES)
             else:
                 if statement.dict['else_statements'] is not None:
                     for s in statement.dict['else_statements']:
-                        self.run_statement(s, LOCAL_VARIABLES)
+                        self.run_statement(s, NEW_LOCAL_VARIABLES, NEW_BLOCK_VARIABLES)
+                        
+            # reset LOCAL_VARIABLES and BLOCK_VARIABLES to original state
+            NEW_BLOCK_VARIABLES.clear()
+            for key in NEW_LOCAL_VARIABLES:
+                if key in BLOCK_VARIABLES:
+                    BLOCK_VARIABLES[key] = NEW_LOCAL_VARIABLES[key]
+                else:
+                    LOCAL_VARIABLES[key] = NEW_LOCAL_VARIABLES[key]
                         
         elif statement.elem_type == InterpreterBase.WHILE_NODE:
             condition = self.run_expression(statement.dict['condition'], LOCAL_VARIABLES)
@@ -236,18 +354,30 @@ class Interpreter(InterpreterBase):
                     ErrorType.TYPE_ERROR,
                     f'If statement did not return a boolean, returned: {condition.kind}, Value: {condition.value}'
                 )
+                
+            NEW_BLOCK_VARIABLES = {}
+            NEW_LOCAL_VARIABLES = {**LOCAL_VARIABLES, **BLOCK_VARIABLES}
+                
             while condition.value:
                 for s in statement.dict['statements']:
-                    self.run_statement(s, LOCAL_VARIABLES)
+                    self.run_statement(s, NEW_LOCAL_VARIABLES, NEW_BLOCK_VARIABLES)
                     
-                condition = self.run_expression(statement.dict['condition'], LOCAL_VARIABLES)
+                condition = self.run_expression(statement.dict['condition'], NEW_LOCAL_VARIABLES, NEW_BLOCK_VARIABLES)
+                
+            # reset LOCAL_VARIABLES and BLOCK_VARIABLES to original state
+            NEW_BLOCK_VARIABLES.clear()
+            for key in NEW_LOCAL_VARIABLES:
+                if key in BLOCK_VARIABLES:
+                    BLOCK_VARIABLES[key] = NEW_LOCAL_VARIABLES[key]
+                else:
+                    LOCAL_VARIABLES[key] = NEW_LOCAL_VARIABLES[key]
                     
         elif statement.elem_type == InterpreterBase.RETURN_NODE:
             if statement.dict['expression']:
-                val = self.run_expression(statement.dict['expression'], LOCAL_VARIABLES)
+                val = self.run_expression(statement.dict['expression'], LOCAL_VARIABLES, BLOCK_VARIABLES)
                 raise ReturnSignal(val=val)
             
-            raise ReturnSignal(val=Value(None, None))
+            raise ReturnSignal(val=None)
             
         else:
             raise Exception('Invalid statement passed: ' + str(statement))
@@ -256,7 +386,7 @@ class Interpreter(InterpreterBase):
     '''
     This functions runs a valid Expression element recursively
     '''
-    def run_expression(self, expression: Element, LOCAL_VARIABLES: dict) -> Value:
+    def run_expression(self, expression: Element, LOCAL_VARIABLES: dict[str, Value | Reference], BLOCK_VARIABLES: dict[str, Value | Reference] = {}) -> Reference | Value:
         if expression.elem_type == InterpreterBase.STRING_NODE:
             return Value(str, expression.dict['val'])
         
@@ -267,39 +397,141 @@ class Interpreter(InterpreterBase):
             return Value(bool, expression.dict['val'])
         
         elif expression.elem_type == InterpreterBase.NIL_NODE:
-            return Value(None, None)
+            return Value(Object, None)
+        
+        elif expression.elem_type == InterpreterBase.EMPTY_OBJ_NODE:
+            return Value(Object, Object())
         
         elif expression.elem_type == InterpreterBase.QUALIFIED_NAME_NODE:
-            var_name = expression.dict['name']
-            
-            if var_name not in LOCAL_VARIABLES:
+            fields = expression.dict['name'].split('.')
+            if len(fields) == 1: # not an object
+                var_base_name = expression.dict['name']
+            else:
+                var_base_name = fields[0]
+
+            if var_base_name not in LOCAL_VARIABLES and var_base_name not in BLOCK_VARIABLES:
                 super().error(
                     ErrorType.NAME_ERROR,
-                    "Variable name " + str(var_name) + " undefined"
-                )
-            elif LOCAL_VARIABLES[var_name] == None:
-                super().error(
-                    ErrorType.FAULT_ERROR,
-                    "Variable " + str(var_name) + " declared but unassigned"
+                    "Variable " + str(var_base_name) + " undefined"
                 )
             else:
-                return LOCAL_VARIABLES[var_name]
+                # if object dotted string
+                if len(fields) > 1:
+                    base_val = LOCAL_VARIABLES[var_base_name] if var_base_name in LOCAL_VARIABLES else BLOCK_VARIABLES[var_base_name]
+                    if base_val.value == None:
+                        super().error(
+                            ErrorType.FAULT_ERROR,
+                            f'Base variable {var_base_name} not defined yet'
+                        )
+                    iterr = base_val.value
+                    for i in range(1, len(fields) - 1): # we check fields starting from the 2nd (cuz we know 1st exists) till the 2nd last (cuz we don't know whether the last field is new or not)
+                        if fields[i] in iterr.value:
+                            if fields[i][-1] != 'o':
+                                super().error(
+                                    ErrorType.TYPE_ERROR,
+                                    f'Intermediate segment {fields[i]} for variable {var_base_name} is not object'
+                                )
+                            iterr = iterr.value[fields[i]].value
+                        else:
+                            super().error(
+                                ErrorType.NAME_ERROR,
+                                f'Requested field {fields[i]} does not exist in object {expression.dict["name"]}'
+                            )
+                    # now we're on the last field
+                    if fields[-1] not in iterr.value:
+                        super().error(
+                            ErrorType.NAME_ERROR,
+                            f'Requested field {fields[-1]} does not exist in object {expression.dict["name"]}'
+                        )
+                    else:
+                        return Reference(iterr.value, fields[-1])
+                    
+                # normal variable name resolution
+                else:
+                    if var_base_name in LOCAL_VARIABLES:
+                        # prevent the max recursion depth Reference -> Reference -> Reference problem
+                        if isinstance(LOCAL_VARIABLES[var_base_name], Reference):
+                            return LOCAL_VARIABLES[var_base_name]
+                        return Reference(LOCAL_VARIABLES, var_base_name)
+                    else:
+                        if isinstance(BLOCK_VARIABLES[var_base_name], Reference):
+                            return BLOCK_VARIABLES[var_base_name]
+                        return Reference(BLOCK_VARIABLES, var_base_name)
             
         elif expression.elem_type == InterpreterBase.FCALL_NODE:
             func_name = expression.dict['name']
             args = expression.dict['args']
             
-            args = [self.run_expression(e, LOCAL_VARIABLES) for e in args] # evaluate all arguments first
+            args = [self.run_expression(e, LOCAL_VARIABLES, BLOCK_VARIABLES) for e in args] # evaluate all arguments first
             
             return self.call_function(func_name, args)
         
-        
+        elif expression.elem_type == InterpreterBase.CONVERT_NODE:
+            to_convert = self.run_expression(expression.dict['expr'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            
+            if to_convert.kind == Object:
+                super().error(
+                    ErrorType.TYPE_ERROR,
+                    "Attempted to convert type Object"
+                )
+            if to_convert.kind == None:
+                super().error(
+                    ErrorType.TYPE_ERROR,
+                    "Attempted to convert type nil"
+                )
+            
+            if expression.dict['to_type'] == 'int':
+                if to_convert.kind == str:
+                    if not to_convert.value.isdigit():
+                        super().error(
+                            ErrorType.TYPE_ERROR,
+                            f"Attempted to convert non-digit string to int"
+                        )
+                    return Value(int, int(to_convert.value))
+                elif to_convert.kind == bool:
+                    if to_convert.value == True:
+                        return Value(int, 1)
+                    return Value(int, 0)
+                elif to_convert.kind == int:
+                    return to_convert
+                else:
+                    raise Exception(f"Attempted to convert to integer but some uncaught error occurred")
+            elif expression.dict['to_type'] == 'str':
+                if to_convert.kind == int:
+                    return Value(str, str(to_convert.value))
+                elif to_convert.kind == bool:
+                    if to_convert.value == True:
+                        return Value(str, "true")
+                    return Value(str, "false")
+                elif to_convert.kind == str:
+                    return to_convert
+                else:
+                    raise Exception(f"Attempted to convert to integer but some uncaught error occurred")
+            elif expression.dict['to_type'] == 'bool':
+                if to_convert.kind == int:
+                    if to_convert.value == 0:
+                        return Value(bool, False)
+                    return Value(bool, True)
+                elif to_convert.kind == str:
+                    if to_convert.value == '':
+                        return Value(bool, False)
+                    return Value(bool, True)
+                elif to_convert.kind == bool:
+                    return to_convert
+                else:
+                    raise Exception(f"Attempted to convert to integer but some uncaught error occurred")
+                
+            super().error(
+                ErrorType.TYPE_ERROR,
+                f"Somehow went through all the elifs and didn't get caught so take a look at this"
+            )
+                        
         #
         # Section for Binary Operation Expression Nodes
         #
         elif expression.elem_type == '+':
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
-            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             # perform string concatenation operation
             if val1.kind == str and val2.kind == str:
@@ -314,8 +546,8 @@ class Interpreter(InterpreterBase):
                     f"Invalid addition operation between {val1.kind} and {val2.kind}"
                 )
         elif expression.elem_type == '-':
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
-            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             if val1.kind == int and val2.kind == int:
                 return Value(int, val1.value - val2.value)
@@ -325,8 +557,8 @@ class Interpreter(InterpreterBase):
                     f"Invalid subtraction operation between {val1.kind} and {val2.kind}"
                 )
         elif expression.elem_type == '*':
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
-            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES, BLOCK_VARIABLES)
 
             if val1.kind == int and val2.kind == int:
                 return Value(int, val1.value * val2.value)
@@ -336,8 +568,8 @@ class Interpreter(InterpreterBase):
                     f"Invalid multiplication operation between {val1.kind} and {val2.kind}"
                 )
         elif expression.elem_type == '/':
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
-            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             if val1.kind == int and val2.kind == int:
                 return Value(int, val1.value // val2.value)
@@ -348,8 +580,8 @@ class Interpreter(InterpreterBase):
                 )
                 
         elif expression.elem_type == '<':
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
-            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             if val1.kind == int and val2.kind == int:
                 return Value(bool, val1.value < val2.value)
@@ -359,8 +591,8 @@ class Interpreter(InterpreterBase):
                     f"Invalid < operation between {val1.kind} and {val2.kind}"
                 )
         elif expression.elem_type == '<=':
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
-            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             if val1.kind == int and val2.kind == int:
                 return Value(bool, val1.value <= val2.value)
@@ -370,8 +602,8 @@ class Interpreter(InterpreterBase):
                     f"Invalid <= operation between {val1.kind} and {val2.kind}"
                 )
         elif expression.elem_type == '>':
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
-            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             if val1.kind == int and val2.kind == int:
                 return Value(bool, val1.value > val2.value)
@@ -381,8 +613,8 @@ class Interpreter(InterpreterBase):
                     f"Invalid > operation between {val1.kind} and {val2.kind}"
                 )
         elif expression.elem_type == '>=':
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
-            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             if val1.kind == int and val2.kind == int:
                 return Value(bool, val1.value >= val2.value)
@@ -393,16 +625,16 @@ class Interpreter(InterpreterBase):
                 )
                 
         elif expression.elem_type == '==':
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
-            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             # if 2 values are of different types, they are not equal
             if val1.kind != val2.kind:
                 return Value(bool, False)
             return Value(bool, val1.value == val2.value)
         elif expression.elem_type == '!=':
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
-            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             # if 2 values are of different types, they are not equal
             if val1.kind != val2.kind:
@@ -410,8 +642,8 @@ class Interpreter(InterpreterBase):
             return Value(bool, val1.value != val2.value)
         
         elif expression.elem_type == '&&':
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
-            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             if val1.kind != bool or val2.kind != bool:
                 super().error(
@@ -420,8 +652,8 @@ class Interpreter(InterpreterBase):
                 )
             return Value(bool, val1.value and val2.value)
         elif expression.elem_type == '||':
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
-            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
+            val2 = self.run_expression(expression.dict['op2'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             if val1.kind != bool or val2.kind != bool:
                 super().error(
@@ -435,7 +667,7 @@ class Interpreter(InterpreterBase):
         # Begin Unary Negation Expression Nodes
         #
         elif expression.elem_type == InterpreterBase.NEG_NODE:
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             if val1.kind != int:
                 super().error(
@@ -444,7 +676,7 @@ class Interpreter(InterpreterBase):
                 )
             return Value(int, -1 * val1.value)
         elif expression.elem_type == InterpreterBase.NOT_NODE:
-            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES)
+            val1 = self.run_expression(expression.dict['op1'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             if val1.kind != bool:
                 super().error(
@@ -456,21 +688,20 @@ class Interpreter(InterpreterBase):
         else:
             raise Exception('Unknown Expression ' + str(expression))
         
-PROG = """
-def getValuei() { return 100; }
-def getValuei(ai) { return ai + 50; }        /* int -> int */
-def getValuei(ab)                            /* bool -> int */
-  { if (ab) { return 200; } return 300; }  
-def getValuei(ao, bs) { return 400; }  /* (obj,str) -> int */
-def getValuei(as, bi)                  /* (str,int) -> int */
-  { return bi + 10; } 
 
+PROG = """
 def main() {
-    print(getValuei(inputi()));
+    var o;
+    o = @;
+    o.childo = nil;
+
+    print(o.childo.xi);
 }
 """
+
         
 if __name__ == '__main__':
     i = Interpreter()
     
     i.run(PROG)
+    
