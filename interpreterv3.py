@@ -1,4 +1,4 @@
-from typing import List, Optional, Union
+from typing import List, Union
 from intbase import InterpreterBase, ErrorType
 from brewparse import parse_program
 from element import Element
@@ -709,12 +709,14 @@ class Interpreter(InterpreterBase):
 
 PROG = """
 def main() {
-    if (true) {
-        bvar xi;
-        xi = 3;
-    }
-    print(xi); 
+    var ao;
+    ao = @;
+    ao.bo = @;
+    ao.bo.co = @;
+    ao.bo.co.xi = 999;
+    print(int(ao.bo.co.xi));
 }
+
 """
 
         
