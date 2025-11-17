@@ -180,8 +180,9 @@ class Interpreter(InterpreterBase):
                 
             # run each statement
             try:
+                BLOCK_VARIABLES = {}
                 for statement in function.function.dict['statements']:
-                    self.run_statement(statement, LOCAL_VARIABLES)
+                    self.run_statement(statement, LOCAL_VARIABLES, BLOCK_VARIABLES)
             except ReturnSignal as r:
                 return_value = r.val
                 
@@ -203,7 +204,7 @@ class Interpreter(InterpreterBase):
     '''
     This function runs a statement.
     '''
-    def run_statement(self, statement: Element, LOCAL_VARIABLES: dict[str, Value], BLOCK_VARIABLES: dict[str, Value] = {}) -> Union[None, Value]:
+    def run_statement(self, statement: Element, LOCAL_VARIABLES: dict[str, Value], BLOCK_VARIABLES: dict[str, Value]) -> Union[None, Value]:
         if statement.elem_type == InterpreterBase.VAR_DEF_NODE:
             var_base_name = statement.dict['name']
             try:
@@ -277,7 +278,7 @@ class Interpreter(InterpreterBase):
             '''
             if len(fields) > 1:
                 base_val = LOCAL_VARIABLES[var_base_name] if var_base_name in LOCAL_VARIABLES else BLOCK_VARIABLES[var_base_name]
-                if base_val.value == None:
+                if base_val.value == None or base_val.kind != Object:
                     super().error(
                         ErrorType.FAULT_ERROR,
                         f'Base variable {var_base_name} not defined yet'
@@ -395,7 +396,7 @@ class Interpreter(InterpreterBase):
     '''
     This functions runs a valid Expression element recursively
     '''
-    def run_expression(self, expression: Element, LOCAL_VARIABLES: dict[str, Value | Reference], BLOCK_VARIABLES: dict[str, Value | Reference] = {}) -> Reference | Value:
+    def run_expression(self, expression: Element, LOCAL_VARIABLES: dict[str, Value | Reference], BLOCK_VARIABLES: dict[str, Value | Reference]) -> Reference | Value:
         if expression.elem_type == InterpreterBase.STRING_NODE:
             return Value(str, expression.dict['val'])
         
@@ -434,7 +435,6 @@ class Interpreter(InterpreterBase):
                         )
                     
                     iterr = base_val.value
-                    
                     for seg in fields[1:-1]:
                         if seg not in iterr.value:
                             super().error(
@@ -708,24 +708,12 @@ class Interpreter(InterpreterBase):
         
 
 PROG = """
-def fooi() {
-    var i;
-    i = 0;
-    while (i < 2) {
-      bvar xi;
-      xi = 0;
-      while (xi < 5) {
-        xi = xi + 1;
-        if (xi == 4 && i == 1) {
-            return xi;
-        }
-      }
-      i = i + 1;
-    }
-}
-
 def main() {
-    print(fooi());
+    if (true) {
+        bvar xi;
+        xi = 3;
+    }
+    print(xi); 
 }
 """
 
