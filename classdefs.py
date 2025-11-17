@@ -109,7 +109,7 @@ def get_default_value(var_type: Type[int] | Type[str] | Type[bool] | Type[Object
     return Value(None, None)
 
 
-class Function():
+class Function:
     """
     Function object definition
     

@@ -16,7 +16,7 @@ class Interpreter(InterpreterBase):
         maintain a mapping of all function names to their respective Element; this will be global so any Expression can look it up
         function object is like this
         
-        func_name: [{num_args: int, function: Function_Node}]
+        func_name: [Function]
         '''
         
         self.FUNCTIONS = {}
@@ -75,9 +75,9 @@ class Interpreter(InterpreterBase):
     
     '''
     This function runs the function. Takes in 'fcall' type node and runs the appropriate 'func'
-    Args should be a list of Values (pre compute everything before calling this)
+    Args should be a list of Values/Refs (pre compute everything before calling this)
     '''
-    def call_function(self, func_name: str, args: List[Value]) -> Value:
+    def call_function(self, func_name: str, args: List[Value | Reference]) -> Value | Reference:
         LOCAL_VARIABLES = {}
         
         # special print function
@@ -355,7 +355,7 @@ class Interpreter(InterpreterBase):
                     LOCAL_VARIABLES[key] = NEW_LOCAL_VARIABLES[key]
                         
         elif statement.elem_type == InterpreterBase.WHILE_NODE:
-            condition = self.run_expression(statement.dict['condition'], LOCAL_VARIABLES)
+            condition = self.run_expression(statement.dict['condition'], LOCAL_VARIABLES, BLOCK_VARIABLES)
             
             if condition.kind != bool:
                 super().error(
@@ -369,7 +369,8 @@ class Interpreter(InterpreterBase):
             while condition.value:
                 for s in statement.dict['statements']:
                     self.run_statement(s, NEW_LOCAL_VARIABLES, NEW_BLOCK_VARIABLES)
-                    
+                
+                NEW_BLOCK_VARIABLES.clear()
                 condition = self.run_expression(statement.dict['condition'], NEW_LOCAL_VARIABLES, NEW_BLOCK_VARIABLES)
                 
             # reset LOCAL_VARIABLES and BLOCK_VARIABLES to original state
@@ -426,11 +427,12 @@ class Interpreter(InterpreterBase):
                 # if object dotted string
                 if len(fields) > 1:
                     base_val = LOCAL_VARIABLES[var_base_name] if var_base_name in LOCAL_VARIABLES else BLOCK_VARIABLES[var_base_name]
-                    if base_val.value == None:
+                    if base_val.value == None or base_val.kind != Object:
                         super().error(
                             ErrorType.FAULT_ERROR,
                             f'Base variable {var_base_name} not defined yet'
                         )
+                    
                     iterr = base_val.value
                     
                     for seg in fields[1:-1]:
@@ -706,11 +708,24 @@ class Interpreter(InterpreterBase):
         
 
 PROG = """
-def foov() {
-    return;
+def fooi() {
+    var i;
+    i = 0;
+    while (i < 2) {
+      bvar xi;
+      xi = 0;
+      while (xi < 5) {
+        xi = xi + 1;
+        if (xi == 4 && i == 1) {
+            return xi;
+        }
+      }
+      i = i + 1;
+    }
 }
+
 def main() {
-    print(repr(foov()));
+    print(fooi());
 }
 """
 
@@ -719,4 +734,3 @@ if __name__ == '__main__':
     i = Interpreter()
     
     i.run(PROG)
-    
