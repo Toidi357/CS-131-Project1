@@ -278,7 +278,12 @@ class Interpreter(InterpreterBase):
             '''
             if len(fields) > 1:
                 base_val = LOCAL_VARIABLES[var_base_name] if var_base_name in LOCAL_VARIABLES else BLOCK_VARIABLES[var_base_name]
-                if base_val.value == None or base_val.kind != Object:
+                if base_val.kind != Object:
+                    super().error(
+                        ErrorType.TYPE_ERROR,
+                        f'Base variable {var_base_name} not of type object'
+                    )
+                if base_val.value == None:
                     super().error(
                         ErrorType.FAULT_ERROR,
                         f'Base variable {var_base_name} not defined yet'
@@ -428,7 +433,12 @@ class Interpreter(InterpreterBase):
                 # if object dotted string
                 if len(fields) > 1:
                     base_val = LOCAL_VARIABLES[var_base_name] if var_base_name in LOCAL_VARIABLES else BLOCK_VARIABLES[var_base_name]
-                    if base_val.value == None or base_val.kind != Object:
+                    if base_val.kind != Object:
+                        super().error(
+                            ErrorType.TYPE_ERROR,
+                            f'Base variable {var_base_name} not of type object'
+                        )
+                    if base_val.value == None:
                         super().error(
                             ErrorType.FAULT_ERROR,
                             f'Base variable {var_base_name} not defined yet'
@@ -709,13 +719,11 @@ class Interpreter(InterpreterBase):
 
 PROG = """
 def main() {
-    var ao;
-    ao = @;
-    ao.bo = @;
-    ao.bo.co = @;
-    ao.bo.co.xi = 999;
-    print(int(ao.bo.co.xi));
+  var xi;
+  xi.vi = "";
+  print(xi.vi);
 }
+
 
 """
 
