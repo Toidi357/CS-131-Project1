@@ -19,7 +19,6 @@ class Interpreter(InterpreterBase):
         interfacde object is like this
             interface_letter: [Interface Node]
         '''
-        
         self.INTERFACES = {}
         self.FUNCTIONS = {}
         
@@ -87,26 +86,9 @@ class Interpreter(InterpreterBase):
     This function DEFINES a function. It does not run anything. Takes in 'func' type node
     '''
     def def_function(self, function: Element) -> None:
-        if function.elem_type != InterpreterBase.FUNC_NODE:
-            raise Exception(f"Element {function.dict['name']}, expected type 'func', but is {function.elem_type}")
+        f = self.create_function(function)
         
         func_name = function.dict['name']
-        
-        try:
-            f = Function(function)
-        except Exception as e:
-            if str(e) == 'NVRT':
-                super().error(
-                    ErrorType.TYPE_ERROR,
-                    f'Function {func_name} does not have valid return type'
-                )
-            elif str(e) == 'NVART':
-                super().error(
-                    ErrorType.TYPE_ERROR,
-                    f'Function {func_name} does not have valid parameter names'
-                )
-            else:
-                raise
         
         if func_name in self.FUNCTIONS: # function overloading           
             if f.signature in [i.signature for i in self.FUNCTIONS[func_name]]:
@@ -121,10 +103,15 @@ class Interpreter(InterpreterBase):
     
     
     '''
-    This function runs the function. Takes in 'fcall' type node and runs the appropriate 'func'
+    This function runs the function. Takes in a function name and possibly the local/block variables
     Args should be a list of Values/Refs (pre compute everything before calling this)
     '''
-    def call_function(self, func_name: str, args: List[Value | Reference]) -> Value | Reference:
+    def call_function(self, func_name: str, args: List[Value | Reference], CALLER_LOCAL=None, CALLER_BLOCK=None) -> Value | Reference:
+        if not CALLER_LOCAL:
+            CALLER_LOCAL = {}
+        if not CALLER_BLOCK:
+            CALLER_BLOCK = {}
+        
         LOCAL_VARIABLES = {}
         
         # special print function
@@ -168,33 +155,102 @@ class Interpreter(InterpreterBase):
     
         # actual function
         else:
-            # check function name
-            if func_name not in self.FUNCTIONS:
-                super().error(
-                    ErrorType.NAME_ERROR,
-                    "Function " + str(func_name) + " undefined"
-                )
-                
-            # find the correct function with num args
             function = None
-            try:
-                sign = generate_function_signature(args)
-            except Exception as e:
-                if str(e) == 'NVART':
+            
+            # if function name is an object path, go through a whole series of resolutions
+            fields = func_name.split('.')
+            if len(fields) != 1: # not an object
+                var_base_name = fields[0]
+                function = self.object_qname_lookup(fields, var_base_name, CALLER_BLOCK, CALLER_LOCAL, func_name)
+                
+                if function.kind is Nil:
+                    super().error(
+                        ErrorType.FAULT_ERROR,
+                        f'Function {func_name} is nil'
+                    )
+                if function.kind is not Function:
                     super().error(
                         ErrorType.TYPE_ERROR,
-                        f'Function {func_name} does not have valid parameter names'
+                        f'Function {func_name} is not function'
                     )
-                raise
-            for func in self.FUNCTIONS[func_name]:  
-                if func.signature == sign:
-                    function = func
-            if function is None:
+                
+                selfo = Value(Object, Object(function.env))
+                function = function.value
+            
+            # else, check function name normally
+            else:
+                if func_name not in self.FUNCTIONS and func_name not in CALLER_LOCAL and func_name not in CALLER_BLOCK:
+                    super().error(
+                        ErrorType.NAME_ERROR,
+                        "Function " + str(func_name) + " undefined"
+                    )
+                
+                # find the correct function with num args
+                try:
+                    sign = generate_function_signature(args)
+                except Exception as e:
+                    if str(e) == 'NVART':
+                        super().error(
+                            ErrorType.TYPE_ERROR,
+                            f'Function {func_name} does not have valid parameter names'
+                        )
+                    raise
+                
+                # find the correct function to call, is either global function or variable
+                # since there is no overloading of functions in variables, only one of these will return true
+                if func_name in self.FUNCTIONS:
+                    for func in self.FUNCTIONS[func_name]:  
+                        if func.signature == sign:
+                            function = func
+                if func_name in CALLER_LOCAL:
+                    if CALLER_LOCAL[func_name].kind is Nil:
+                        super().error(
+                            ErrorType.FAULT_ERROR,
+                            f'Function {func_name} is nil'
+                        )
+                    if CALLER_LOCAL[func_name].kind is not Function:
+                        super().error(
+                            ErrorType.TYPE_ERROR,
+                            f'Function {func_name} is not function'
+                        )
+                        
+                    function = CALLER_LOCAL[func_name].value
+                if func_name in CALLER_BLOCK:
+                    if CALLER_BLOCK[func_name].kind is Nil:
+                        super().error(
+                            ErrorType.FAULT_ERROR,
+                            f'Function {func_name} is nil'
+                        )
+                    if CALLER_BLOCK[func_name].kind is not Function:
+                        super().error(
+                            ErrorType.TYPE_ERROR,
+                            f'Function {func_name} is not function'
+                        )
+                    
+                    function = CALLER_BLOCK[func_name].value
+                
+                if function is None:
+                    super().error(
+                        ErrorType.NAME_ERROR,
+                        f'Function {func_name} not found with signature: {sign}'
+                    )
+            
+            # function variable is now of type Function
+            
+            # if function in variable name, there's no overloading so double check function param signatures
+            if generate_function_signature(args) != generate_function_signature(function.function.dict['args']):
                 super().error(
-                    ErrorType.NAME_ERROR,
-                    f'Function {func_name} not found with signature: {sign}'
+                    ErrorType.TYPE_ERROR,
+                    f'Function {func_name} called with wrong params'
                 )
-            # function is now of type Element, elem_type = "func"
+            
+            # if lambda, load captured variables into LOCAL_VARIABLES
+            if hasattr(function, 'environment'):
+                LOCAL_VARIABLES = function.environment
+                
+            # load selfo into LOCAL_VARIABLES if func is from an object
+            if len(fields) != 1:
+                LOCAL_VARIABLES['selfo'] = selfo
             
             # load args into LOCAL_VARIABLES
             for i, argNode in enumerate(function.function.dict['args']):
@@ -208,6 +264,21 @@ class Interpreter(InterpreterBase):
                         ErrorType.TYPE_ERROR,
                         f'Argument assignment of {arg_name}: Attempted assign type {arg_val.kind} to variable type {arg_type}'
                     )
+                    
+                # if arg_name is an interface, check arg_val to make sure it has all required fields
+                if fields[-1][-1].isupper():
+                    
+                    interface = self.INTERFACES[fields[-1][-1]]
+                    if not interface:
+                        super().error(
+                            ErrorType.NAME_ERROR,
+                            f'Interface {fields[-1][-1]} not found'
+                        )
+                    if not types_equal(arg_val.kind, Object) or not validate_object_with_interface(interface, arg_val):
+                        super().error(
+                            ErrorType.TYPE_ERROR,
+                            f'Assignment to interface {fields[-1][-1]} failed'
+                        )
                 
                 if argNode.dict['ref']: # pass by reference variable
                     if not isinstance(arg_val, Reference):
@@ -224,10 +295,10 @@ class Interpreter(InterpreterBase):
                         LOCAL_VARIABLES[arg_name] = Value(val.kind, val.value)
                     else:    
                         LOCAL_VARIABLES[arg_name] = args[i]
-                
+            
             # run each statement
             try:
-                BLOCK_VARIABLES = {}
+                BLOCK_VARIABLES = LOCAL_VARIABLES
                 for statement in function.function.dict['statements']:
                     self.run_statement(statement, LOCAL_VARIABLES, BLOCK_VARIABLES)
             except ReturnSignal as r:
@@ -245,6 +316,20 @@ class Interpreter(InterpreterBase):
                     ErrorType.TYPE_ERROR,
                     f'Function {function.name}: Expected return type {function.return_type} but got {return_value.kind}'
                 )
+                
+            # if func return type is an interface, check returned value to make sure it has all required fields
+            if function.name[-1].isupper():
+                interface = self.INTERFACES[function.name[-1]]
+                if not interface:
+                    super().error(
+                        ErrorType.NAME_ERROR,
+                        f'Interface {function.name[-1]} not found'
+                    )
+                if not types_equal(return_value.kind, Object) or not validate_object_with_interface(interface, return_value):
+                    super().error(
+                        ErrorType.TYPE_ERROR,
+                        f'Assignment to interface {function.name[-1]} failed'
+                    )
             
             return return_value
     
@@ -264,7 +349,7 @@ class Interpreter(InterpreterBase):
                     )
                 raise
             
-            if var_base_name in LOCAL_VARIABLES or var_base_name in BLOCK_VARIABLES:
+            if var_base_name in LOCAL_VARIABLES:
                 super().error(
                     ErrorType.NAME_ERROR,
                     f"Variable {var_base_name} defined more than once"
@@ -319,6 +404,20 @@ class Interpreter(InterpreterBase):
                     ErrorType.TYPE_ERROR,
                     f'Variable assignment of {statement.dict["var"]}: Attempted assign type {new_value.kind} to variable type {var_type}'
                 )
+                
+            # if LHS is an interface, check new_value to make sure it has all required fields
+            if fields[-1][-1].isupper():
+                interface = self.INTERFACES[fields[-1][-1]]
+                if not interface:
+                    super().error(
+                        ErrorType.NAME_ERROR,
+                        f'Interface {fields[-1][-1]} not found'
+                    )
+                if not types_equal(new_value.kind, Object) or not validate_object_with_interface(interface, new_value):
+                    super().error(
+                        ErrorType.TYPE_ERROR,
+                        f'Assignment to interface {fields[-1][-1]} failed'
+                    )
             
             '''
             Object stuff
@@ -358,6 +457,8 @@ class Interpreter(InterpreterBase):
                 
                 # the last field gets assigned
                 iterr.value[fields[-1]] = new_value
+            
+            # normal variable resolution
             else:
                 # if this variable is a Reference to a callee's variable, update it as such
                 if var_base_name in BLOCK_VARIABLES:
@@ -377,7 +478,7 @@ class Interpreter(InterpreterBase):
             
             args = [self.run_expression(e, LOCAL_VARIABLES, BLOCK_VARIABLES) for e in args] # evaluate all arguments first
             
-            return self.call_function(func_name, args)
+            return self.call_function(func_name, args, LOCAL_VARIABLES, BLOCK_VARIABLES)
             
         elif statement.elem_type == InterpreterBase.IF_NODE:
             condition = self.run_expression(statement.dict['condition'], LOCAL_VARIABLES, BLOCK_VARIABLES)
@@ -471,7 +572,7 @@ class Interpreter(InterpreterBase):
             else:
                 var_base_name = fields[0]
 
-            if var_base_name not in LOCAL_VARIABLES and var_base_name not in BLOCK_VARIABLES:
+            if var_base_name not in LOCAL_VARIABLES and var_base_name not in BLOCK_VARIABLES and var_base_name not in self.FUNCTIONS:
                 super().error(
                     ErrorType.NAME_ERROR,
                     "Variable " + str(var_base_name) + " undefined"
@@ -479,51 +580,13 @@ class Interpreter(InterpreterBase):
             else:
                 # if object dotted string
                 if len(fields) > 1:
-                    base_val = BLOCK_VARIABLES[var_base_name] if var_base_name in BLOCK_VARIABLES else LOCAL_VARIABLES[var_base_name]
-                    if not types_equal(base_val.kind, Object):
-                        super().error(
-                            ErrorType.TYPE_ERROR,
-                            f'Base variable {var_base_name} not of type object'
-                        )
-                    if base_val.value == None:
-                        super().error(
-                            ErrorType.FAULT_ERROR,
-                            f'Base variable {var_base_name} not defined yet'
-                        )
-                    
-                    iterr = base_val.value
-                    for seg in fields[1:-1]:
-                        if seg not in iterr.value:
-                            super().error(
-                                ErrorType.NAME_ERROR,
-                                f'Requested field {seg} does not exist in object {expression.dict["name"]}'
-                            )
-                        next_val = iterr.value[seg]
-                        if types_equal(next_val.kind, Nil) and next_val.value == None:
-                            super().error(
-                                ErrorType.FAULT_ERROR,
-                                f'Dereferencing nil of {seg} for {var_base_name}'
-                            )
-                        if not types_equal(next_val.kind, Object):
-                            super().error(
-                                ErrorType.TYPE_ERROR,
-                                f'Intermediate dotted segment not ending with o: {seg} for {var_base_name}'
-                            )
-                        
-                        iterr = next_val.value
-                        
-                    # now we're on the last field
-                    if fields[-1] not in iterr.value:
-                        super().error(
-                            ErrorType.NAME_ERROR,
-                            f'Requested field {fields[-1]} does not exist in object {expression.dict["name"]}'
-                        )
-                    else:
-                        return Reference(iterr.value, fields[-1])
+                    return self.object_qname_lookup(fields, var_base_name, BLOCK_VARIABLES, LOCAL_VARIABLES, expression.dict['name'])
                     
                 # normal variable name resolution
                 else:
-                    if var_base_name in BLOCK_VARIABLES:
+                    if var_base_name in self.FUNCTIONS:
+                        return Value(Function, self.FUNCTIONS[var_base_name][0])
+                    elif var_base_name in BLOCK_VARIABLES:
                         if isinstance(BLOCK_VARIABLES[var_base_name], Reference):
                             return BLOCK_VARIABLES[var_base_name]
                         return Reference(BLOCK_VARIABLES, var_base_name)
@@ -539,7 +602,7 @@ class Interpreter(InterpreterBase):
             
             args = [self.run_expression(e, LOCAL_VARIABLES, BLOCK_VARIABLES) for e in args] # evaluate all arguments first
             
-            return self.call_function(func_name, args)
+            return self.call_function(func_name, args, LOCAL_VARIABLES, BLOCK_VARIABLES)
         
         elif expression.elem_type == InterpreterBase.CONVERT_NODE:
             to_convert = self.run_expression(expression.dict['expr'], LOCAL_VARIABLES, BLOCK_VARIABLES)
@@ -600,7 +663,34 @@ class Interpreter(InterpreterBase):
                 ErrorType.TYPE_ERROR,
                 f"Somehow went through all the elifs and didn't get caught so take a look at this"
             )
-                        
+        
+        # for lambda functions
+        elif expression.elem_type == InterpreterBase.FUNC_NODE:
+            current_env = {**LOCAL_VARIABLES, **BLOCK_VARIABLES}
+
+            captured_env = {}
+
+            free_vars = current_env.keys()
+
+            for var_name in free_vars:
+                var = current_env[var_name]
+
+                # primitive capture by value
+                if var.kind in (int, bool, str, Nil):
+                    if isinstance(var, Reference):
+                        var = var.get()
+                        captured_env[var_name] = Value(var.kind, var.value)
+                    else:
+                        captured_env[var_name] = var
+                else:
+                    captured_env[var_name] = var
+
+            f = self.create_function(expression)
+            
+            f.environment = captured_env
+            
+            return Value(Function, f)
+        
         #
         # Section for Binary Operation Expression Nodes
         #
@@ -762,30 +852,104 @@ class Interpreter(InterpreterBase):
                 
         else:
             raise Exception('Unknown Expression ' + str(expression))
+      
+    
+    def object_qname_lookup(self, fields, var_base_name, BLOCK_VARIABLES, LOCAL_VARIABLES, expression_name):
+        '''
+        Modularizing this function, expression_name is expression.dict['name']
+        '''
+        base_val = BLOCK_VARIABLES[var_base_name] if var_base_name in BLOCK_VARIABLES else LOCAL_VARIABLES[var_base_name] 
+        if not base_val or not types_equal(base_val.kind, Object):
+            super().error(
+                ErrorType.TYPE_ERROR,
+                f'Base variable {var_base_name} not of type object'
+            )
+        if base_val.value == None:
+            super().error(
+                ErrorType.FAULT_ERROR,
+                f'Base variable {var_base_name} not defined yet'
+            )
+            
+        iterr = base_val.value
+        for seg in fields[1:-1]:
+            if seg not in iterr.value:
+                super().error(
+                    ErrorType.NAME_ERROR,
+                    f'Requested field {seg} does not exist in object {expression_name}'
+                )
+            next_val = iterr.value[seg]
+            if types_equal(next_val.kind, Nil) and next_val.value == None:
+                super().error(
+                    ErrorType.FAULT_ERROR,
+                    f'Dereferencing nil of {seg} for {var_base_name}'
+                )
+            if not types_equal(next_val.kind, Object):
+                super().error(
+                    ErrorType.TYPE_ERROR,
+                    f'Intermediate dotted segment not ending with o: {seg} for {var_base_name}'
+                )
+            
+            iterr = next_val.value
+            
+        # now we're on the last field
+        if fields[-1] not in iterr.value:
+            super().error(
+                ErrorType.NAME_ERROR,
+                f'Requested field {fields[-1]} does not exist in object {expression_name}'
+            )
+        else:
+            return Reference(iterr.value, fields[-1])
+
+    def create_function(self, function: Element) -> Function:
+        """
+        Takes in a function Element node and returns the Function object
+        Throws error if function signature invalid
+        """
+        if function.elem_type != InterpreterBase.FUNC_NODE:
+            raise Exception(f"Element {function.dict['name']}, expected type 'func', but is {function.elem_type}")
+        
+        func_name = function.dict['name']
+        
+        try:
+            f = Function(function)
+        except Exception as e:
+            if str(e) == 'NVRT':
+                super().error(
+                    ErrorType.TYPE_ERROR,
+                    f'Function {func_name} does not have valid return type'
+                )
+            elif str(e) == 'NVART':
+                super().error(
+                    ErrorType.TYPE_ERROR,
+                    f'Function {func_name} does not have valid parameter names'
+                )
+            else:
+                raise
+            
+        return f
         
 
 PROG = """
-def getInti() {
-  return 42;
+interface B {
+    vali;
 }
-
-def getBoolb() {
-  return true;
-}
-
-def getStrings() {
-  return "hello world";
+interface A {
+    xB;
 }
 
 def main() {
-  var i;      /* int variable */
-  var s;      /* string variable */
-  var b;      /* bool variable */
-  
-  /* assign function returning bool to int variable - should fail */
-  i = getBoolb();
+    var xo;
+    xo = @;
+    var xA;
+    
+    var xxo;
+    xxo = @;
+    xxo.vali = 5;
+    
+    xo.xB = xxo;
+    xA = xo;
+    print(xA.xB.vali);
 }
-
 
 
 """
