@@ -246,7 +246,7 @@ class Interpreter(InterpreterBase):
             
             # if lambda, load captured variables into LOCAL_VARIABLES
             if hasattr(function, 'environment'):
-                LOCAL_VARIABLES = function.environment
+                LOCAL_VARIABLES = { **function.environment }
                 
             # load selfo into LOCAL_VARIABLES if func is from an object
             if len(fields) != 1:
@@ -309,6 +309,11 @@ class Interpreter(InterpreterBase):
             else:
                 # if no explicit return, return default value for function's declared return type
                 return_value = get_default_value(function.return_type)
+                
+            # after running a lambda, need to update captured values to its .environment
+            if hasattr(function, 'environment'):
+                for key in function.environment:
+                    function.environment[key] = LOCAL_VARIABLES[key]
             
             if not types_equal(function.return_type, return_value.kind):
                 super().error(
@@ -929,26 +934,16 @@ class Interpreter(InterpreterBase):
         
 
 PROG = """
-interface B {
-    vali;
-}
-interface A {
-    xB;
+def main() {
+    var xi;
+    xi = 5;
+    var f;
+    f = lambdav() { xi = xi + 1; print(xi); };
+    f();
+    f();
 }
 
-def main() {
-    var xo;
-    xo = @;
-    var xA;
-    
-    var xxo;
-    xxo = @;
-    xxo.vali = 5;
-    
-    xo.xB = xxo;
-    xA = xo;
-    print(xA.xB.vali);
-}
+
 
 
 """
