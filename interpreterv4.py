@@ -266,18 +266,17 @@ class Interpreter(InterpreterBase):
                     )
                     
                 # if arg_name is an interface, check arg_val to make sure it has all required fields
-                if fields[-1][-1].isupper():
-                    
-                    interface = self.INTERFACES[fields[-1][-1]]
+                if arg_name[-1].isupper():
+                    interface = self.INTERFACES[arg_name[-1]]
                     if not interface:
                         super().error(
                             ErrorType.NAME_ERROR,
-                            f'Interface {fields[-1][-1]} not found'
+                            f'Interface {arg_name[-1]} not found'
                         )
                     if not types_equal(arg_val.kind, Object) or not validate_object_with_interface(interface, arg_val):
                         super().error(
                             ErrorType.TYPE_ERROR,
-                            f'Assignment to interface {fields[-1][-1]} failed'
+                            f'Assignment to interface {arg_name[-1]} failed'
                         )
                 
                 if argNode.dict['ref']: # pass by reference variable
