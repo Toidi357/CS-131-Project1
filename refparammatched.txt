@@ -1,0 +1,30 @@
+interface A {
+  funcif(&i, &s);
+}
+
+def func_impli(&i, &s) {
+  return i + 5;
+}
+
+def main() {
+  var myObjecto;
+  var interfaceVarA;
+  
+  /* Create object with function that matches interface (including reference parameters) */
+  myObjecto = @;
+  myObjecto.funcif = func_impli;
+  
+  /* Assign to interface variable - should work with matching reference parameters */
+  interfaceVarA = myObjecto;
+  
+  /* Test that the function can be called through the interface */
+  var resulti;
+  resulti = interfaceVarA.funcif(10, "test");
+  print(resulti);
+}
+
+/*
+*OUT*
+15
+*OUT*
+*/ 
