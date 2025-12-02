@@ -5,6 +5,7 @@ from element import Element
 
 from classdefs import *
 
+
 class Interpreter(InterpreterBase):
     def __init__(self, console_output=True, inp=None, trace_output=False):
         super().__init__(console_output, inp)   # call InterpreterBase's constructor
@@ -161,7 +162,7 @@ class Interpreter(InterpreterBase):
             fields = func_name.split('.')
             if len(fields) != 1: # not an object
                 var_base_name = fields[0]
-                function = self.object_qname_lookup(fields, var_base_name, CALLER_BLOCK, CALLER_LOCAL, func_name)
+                function, selfo = self.object_qname_lookup(fields, var_base_name, CALLER_BLOCK, CALLER_LOCAL, func_name)
                 
                 if function.kind is Nil:
                     super().error(
@@ -174,7 +175,7 @@ class Interpreter(InterpreterBase):
                         f'Function {func_name} is not function'
                     )
                 
-                selfo = Value(Object, Object(function.env))
+                selfo = Value(Object, selfo)
                 function = function.value
             
             # else, check function name normally
@@ -584,7 +585,7 @@ class Interpreter(InterpreterBase):
             else:
                 # if object dotted string
                 if len(fields) > 1:
-                    return self.object_qname_lookup(fields, var_base_name, BLOCK_VARIABLES, LOCAL_VARIABLES, expression.dict['name'])
+                    return (self.object_qname_lookup(fields, var_base_name, BLOCK_VARIABLES, LOCAL_VARIABLES, expression.dict['name']))[0]
                     
                 # normal variable name resolution
                 else:
@@ -861,6 +862,7 @@ class Interpreter(InterpreterBase):
     def object_qname_lookup(self, fields, var_base_name, BLOCK_VARIABLES, LOCAL_VARIABLES, expression_name):
         '''
         Modularizing this function, expression_name is expression.dict['name']
+        Returns a Reference to the exact thing we're pointing to, and iterr which is the selfo object
         '''
         base_val = BLOCK_VARIABLES[var_base_name] if var_base_name in BLOCK_VARIABLES else LOCAL_VARIABLES[var_base_name] 
         if not base_val or not types_equal(base_val.kind, Object):
@@ -902,7 +904,7 @@ class Interpreter(InterpreterBase):
                 f'Requested field {fields[-1]} does not exist in object {expression_name}'
             )
         else:
-            return Reference(iterr.value, fields[-1])
+            return Reference(iterr.value, fields[-1]), iterr
 
     def create_function(self, function: Element) -> Function:
         """
@@ -934,18 +936,6 @@ class Interpreter(InterpreterBase):
         
 
 PROG = """
-def main() {
-    var xi;
-    xi = 5;
-    var f;
-    f = lambdav() { xi = xi + 1; print(xi); };
-    f();
-    f();
-}
-
-
-
-
 """
 
         
